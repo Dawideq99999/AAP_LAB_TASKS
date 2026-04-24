@@ -43,3 +43,4 @@ class Product:
             raise ValueError("Procent rabatu musi być w zakresie 0-100")
 
         self.price = self.price * (1 - percent / 100)
+        ###############################################
