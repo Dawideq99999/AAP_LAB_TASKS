@@ -1,0 +1,207 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, hour, udf
+from pyspark.sql.types import StringType
+
+from pyspark.ml.feature import StringIndexer, VectorAssembler
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml import Pipeline
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+
+# ============================================================
+# 1. START SPARK
+# ============================================================
+
+spark = (
+    SparkSession.builder
+    .appName("Chicago Crimes Analysis")
+    .getOrCreate()
+)
+
+print("=" * 50)
+print("SPARK URUCHOMIONY")
+print("=" * 50)
+
+# ============================================================
+# 2. WCZYTANIE DANYCH
+# ============================================================
+
+csv_path = r"C:\Users\dawid_lmibxt\Desktop\Pyton zadania\AAP_LAB_TASKS\materialy\lab_05\Rozwiazywanie_zadanlab05\chicago_crimes_sample.csv"
+
+df = (
+    spark.read
+    .option("header", True)
+    .option("inferSchema", True)
+    .option("multiLine", True)
+    .option("quote", '"')
+    .option("escape", '"')
+    .csv(csv_path)
+)
+
+print("=" * 50)
+print("PODGLĄD DANYCH")
+print("=" * 50)
+
+df.show(5)
+
+print("=" * 50)
+df.printSchema()
+
+# ============================================================
+# 3. CZYSZCZENIE DANYCH
+# ============================================================
+
+print("=" * 50)
+print("CZYSZCZENIE DANYCH")
+print("=" * 50)
+
+df_clean = df.dropDuplicates()
+
+df_clean = df_clean.dropna(
+    subset=[
+        "primary_type",
+        "arrest",
+        "domestic",
+        "district",
+        "ward",
+        "community_area",
+        "date"
+    ]
+)
+
+# ============================================================
+# 4. UDF - PORA DNIA
+# ============================================================
+
+def time_of_day(h):
+    if h is None:
+        return "unknown"
+    if 5 <= h < 12:
+        return "morning"
+    elif 12 <= h < 18:
+        return "day"
+    elif 18 <= h < 22:
+        return "evening"
+    else:
+        return "night"
+
+time_udf = udf(time_of_day, StringType())
+
+df_clean = df_clean.withColumn("hour", hour(col("date")))
+df_clean = df_clean.withColumn("time_of_day", time_udf(col("hour")))
+
+# ============================================================
+# 5. CACHE (OPTYMALIZACJA)
+# ============================================================
+
+df_clean.cache()
+
+print("LICZBA REKORDÓW:", df_clean.count())
+
+# ============================================================
+# 6. ZAPIS DO PARQUET (PARTYCJE PO ROKU)
+# ============================================================
+
+df_clean.write \
+    .mode("overwrite") \
+    .partitionBy("year") \
+    .parquet("output/chicago_crimes_parquet")
+
+# ============================================================
+# 7. ANALIZA + EXPLAIN
+# ============================================================
+
+print("=" * 50)
+print("ANALIZA + EXPLAIN")
+print("=" * 50)
+
+analysis = df_clean.groupBy("primary_type").count()
+
+analysis.explain(True)
+
+analysis.orderBy(col("count").desc()).show(10)
+
+# ============================================================
+# 8. PRZYGOTOWANIE MODELU ML
+# ============================================================
+
+print("=" * 50)
+print("PRZYGOTOWANIE MODELU")
+print("=" * 50)
+
+indexer = StringIndexer(
+    inputCol="primary_type",
+    outputCol="label"
+)
+
+assembler = VectorAssembler(
+    inputCols=["district", "ward", "community_area"],
+    outputCol="features"
+)
+
+rf = RandomForestClassifier(
+    labelCol="label",
+    featuresCol="features",
+    numTrees=50
+)
+
+pipeline = Pipeline(stages=[indexer, assembler, rf])
+
+# ============================================================
+# 9. TRAIN / TEST SPLIT
+# ============================================================
+
+train_df, test_df = df_clean.randomSplit([0.8, 0.2], seed=42)
+
+print("TRAIN:", train_df.count())
+print("TEST:", test_df.count())
+
+# ============================================================
+# 10. TRENING MODELU
+# ============================================================
+
+model = pipeline.fit(train_df)
+
+# ============================================================
+# 11. PREDYKCJE
+# ============================================================
+
+predictions = model.transform(test_df)
+
+print("=" * 50)
+print("PREDYKCJE")
+print("=" * 50)
+
+predictions.select(
+    "primary_type",
+    "prediction",
+    "features",
+    "time_of_day"
+).show(10)
+
+# ============================================================
+# 12. OCENA MODELU
+# ============================================================
+
+evaluator = MulticlassClassificationEvaluator(
+    labelCol="label",
+    predictionCol="prediction",
+    metricName="accuracy"
+)
+
+accuracy = evaluator.evaluate(predictions)
+
+print("=" * 50)
+print("DOKŁADNOŚĆ MODELU")
+print("=" * 50)
+
+print("Accuracy:", accuracy)
+
+# ============================================================
+# 13. STOP SPARK
+# ============================================================
+
+spark.stop()
+
+print("=" * 50)
+print("KONIEC PROGRAMU")
+print("=" * 50)
